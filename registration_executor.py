@@ -319,8 +319,6 @@ class RegistrationExecutor:
                     self._send_status("ready_for_code")
                     
                     print("📩 Жду сообщение с кодом Телеграма (120 сек)...")
-                    # Отправляем статус "completed", но код ТГ еще ищем (или можно отправить "waiting_tg_code")
-                    self._send_status("completed") 
                     
                     tg_code = None
                     start_wait = time.time()

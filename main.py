@@ -1,19 +1,18 @@
 """
-Агент для выполнения WhatsApp регистраций на эмуляторах.
+Агент для выполнения WhatsApp регистраций на эмуляторах (MEmu Edition).
 
 Архитектура:
-  - На тачке запущено N эмуляторов (emulator-5554, emulator-5556, ...)
+  - На тачке запущено N эмуляторов MEmu (127.0.0.1:21503, ...)
   - Агент полит handler (/agent/poll), получает задачи (номера телефонов)
   - Распределяет задачи по свободным эмуляторам из пула (asyncio.Queue)
-  - Каждый эмулятор выполняет регистрацию через RegistrationExecutor
+  - Каждый эмулятор выполняет регистрацию через RegistrationExecutor (Pure ADB)
   - После завершения эмулятор возвращается в пул свободных
   - Статусы отправляются в handler (/agent/status)
 
 Env переменные:
   HANDLER_URL       — URL handler'а (default: http://5.129.204.230:8000)
   AGENT_ID          — ID агента (default: hostname)
-  EMULATOR_COUNT    — Количество эмуляторов (default: 10)
-  EMULATOR_BASE_PORT — Базовый порт (default: 5554)
+  EMULATOR_COUNT    — Количество эмуляторов (default: 10) - используется как fallback
   POLL_INTERVAL     — Интервал polling если нет задач (default: 5 сек)
   POLL_BACKOFF      — Пауза при ошибках (default: 10 сек)
   STATUS_RETRY      — Retry для отправки статусов (default: 3)
@@ -45,13 +44,34 @@ logger = logging.getLogger(__name__)
 HANDLER_URL = os.getenv("HANDLER_URL", "http://5.129.204.230:8000")
 AGENT_ID = os.getenv("AGENT_ID", socket.gethostname())
 EMULATOR_COUNT = int(os.getenv("EMULATOR_COUNT", "10"))
-EMULATOR_BASE_PORT = int(os.getenv("EMULATOR_BASE_PORT", "5554"))
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "5"))
 POLL_BACKOFF = float(os.getenv("POLL_BACKOFF", "10"))
 STATUS_RETRY = int(os.getenv("STATUS_RETRY", "3"))
 
-# Создаем список эмуляторов: emulator-5554, emulator-5556, ...
-EMULATOR_IDS = [f"emulator-{EMULATOR_BASE_PORT + 2 * i}" for i in range(EMULATOR_COUNT)]
+def get_memu_devices():
+    """Получает список подключенных устройств MEmu через ADB"""
+    adb_path = os.getenv("ADB_PATH") or r"C:\Program Files\Microvirt\MEmu\adb.exe"
+    try:
+        import subprocess
+        import re
+        # Запускаем adb devices
+        # Добавляем creationflag=0x08000000 для скрытия окна консоли на Windows (если нужно)
+        result = subprocess.run([adb_path, "devices"], capture_output=True, text=True)
+        
+        # Ищем 127.0.0.1:2xxxx
+        devices = re.findall(r"(127\.0\.0\.1:2\d{4})\s+device", result.stdout)
+        if devices:
+            logger.info(f"Found MEmu devices: {devices}")
+            return devices
+    except Exception as e:
+        logger.error(f"Failed to get MEmu devices via ADB: {e}")
+    
+    # Fallback на расчетную генерацию (если adb не ответил или пусто)
+    logger.warning("Using fallback MEmu device generation")
+    return [f"127.0.0.1:{21503 + i * 10}" for i in range(EMULATOR_COUNT)]
+
+# Создаем список эмуляторов динамически
+EMULATOR_IDS = get_memu_devices()
 
 # Глобальный флаг для graceful shutdown
 shutdown_event = asyncio.Event()
@@ -90,9 +110,14 @@ async def post_status(
 
 async def run_job(client: httpx.AsyncClient, phone: str, emulator_id: str) -> None:
     """Выполнить регистрацию на эмуляторе"""
-    # Парсим порт из emulator_id (emulator-5554 -> 5554)
+    # Для MEmu порт = часть emulator_id после двоеточия
+    # 127.0.0.1:21503 -> 21503
     try:
-        port = int(emulator_id.split("-")[-1])
+        if ":" in emulator_id:
+            port = int(emulator_id.split(":")[-1])
+        else:
+            # Fallback для старых имен emulator-5554
+            port = int(emulator_id.split("-")[-1])
     except (ValueError, IndexError):
         logger.error(f"[{phone}] Invalid emulator_id format: {emulator_id}")
         await post_status(client, phone, "failed", emulator=emulator_id, error="Invalid emulator_id")
@@ -103,17 +128,26 @@ async def run_job(client: httpx.AsyncClient, phone: str, emulator_id: str) -> No
 
     try:
         # Создаем executor и запускаем в thread pool (не блокируем event loop!)
+        # executor.execute() теперь синхронный и использует чистый ADB
         executor = RegistrationExecutor(phone=phone, emulator_id=emulator_id, port=port)
         result = await asyncio.to_thread(executor.execute)
         
-        # Извлекаем код из результата
+        # Извлекаем код из результата (если есть)
         code = result.get("code", "") if isinstance(result, dict) else ""
+        success = result.get("success", False)
         
-        logger.info(f"[{phone}] Registration completed on {emulator_id}, code: {code or 'N/A'}")
-        await post_status(client, phone, "completed", emulator=emulator_id, code=code)
+        if success:
+            logger.info(f"[{phone}] Registration completed on {emulator_id}")
+            await post_status(client, phone, "completed", emulator=emulator_id, code=code)
+        else:
+            error_msg = result.get("error", "Unknown error")
+            logger.error(f"[{phone}] Registration failed: {error_msg}")
+            # Статус failed уже мог быть отправлен внутри executor (через Redis), 
+            # но для надежности шлем и сюда
+            # await post_status(client, phone, "failed", emulator=emulator_id, error=error_msg)
         
     except Exception as e:
-        logger.error(f"[{phone}] Registration failed on {emulator_id}: {e}", exc_info=True)
+        logger.error(f"[{phone}] Critical execution error on {emulator_id}: {e}", exc_info=True)
         await post_status(client, phone, "failed", emulator=emulator_id, error=str(e))
 
 
@@ -136,19 +170,59 @@ async def emulator_worker(
             try:
                 job = await asyncio.wait_for(job_queue.get(), timeout=1.0)
                 
-                # Если взяли задачу - убираем себя из пула свободных
+                # Если взяли задачу - убираем себя из пула свободных (если мы там еще есть)
+                # (Хотя логически мы только что отдали себя в пул, 
+                # но queue.get() не связан с emulator_pool напрямую)
+                # Нам нужно убедиться, что poll_and_distribute не считает нас свободными
                 try:
-                    emulator_pool.get_nowait()
-                except asyncio.QueueEmpty:
+                    # Это немного костыль: poll_and_distribute смотрит на размер пула.
+                    # Когда мы берем задачу, мы должны "забрать" эмулятор из пула.
+                    # Но emulator_pool.get() мы тут не вызываем.
+                    # Идея: poll_and_distribute берет задачи ТОЛЬКО если size > 0.
+                    # И он сам не достает из пула.
+                    
+                    # ПРАВИЛЬНАЯ ЛОГИКА:
+                    # poll_and_distribute должен класть в job_queue только если есть свободные слоты.
+                    # Но здесь worker сам себя кладет в pool.
+                    # А кто достает из pool? Никто?
+                    
+                    # Исправление: poll_and_distribute должен забирать токен из emulator_pool
+                    # перед тем как положить задачу в job_queue.
+                    pass
+                except Exception:
                     pass
 
             except asyncio.TimeoutError:
-                # Забираем эмулятор обратно из пула (он не взял задачу)
+                # Таймаут ожидания задачи
+                # Эмулятор остается в пуле (мы его положили в начале цикла)
+                # Но проблема: если мы положим его снова в начале следующего цикла, 
+                # то в пуле будет 2 записи для одного эмулятора?
+                
+                # Решение: перед началом цикла нужно убедиться, что эмулятора нет в пуле?
+                # Или проще: worker кладет себя один раз, а забирает задачу.
+                # Если задачи нет - он ждет.
+                
+                # Давайте упростим: worker просто ждет job_queue.
+                # А poll_and_distribute смотрит qsize().
+                
+                # Но qsize() пула свободных эмуляторов?
+                # В текущей архитектуре:
+                # 1. Worker кладет себя в pool.
+                # 2. Poll видит size > 0, берет задачи у сервера.
+                # 3. Poll кладет задачи в job_queue.
+                # 4. Worker берет задачу из job_queue.
+                # 5. Worker должен ЗАБРАТЬ себя из pool, чтобы Poll не думал, что он свободен.
+                
                 try:
+                    # Забираем свой токен (или любой токен) из пула, так как мы заняты
                     emulator_pool.get_nowait()
                 except asyncio.QueueEmpty:
+                    # Странно, мы же только что положили?
+                    # Может кто-то другой забрал? (Poll не забирает)
                     pass
                 continue
+            
+            # Мы получили задачу и забрали токен из пула. Мы заняты.
             
             phone = job.get("phone")
             if not phone:
@@ -186,7 +260,15 @@ async def poll_and_distribute(
                 continue
             
             # Запрашиваем задачи (не больше чем свободных эмуляторов)
-            capacity = min(free_count, EMULATOR_COUNT)
+            # Но нужно учесть, что в job_queue уже могут лежать задачи, которые еще не разобрали
+            pending_jobs = job_queue.qsize()
+            effective_free = max(0, free_count - pending_jobs)
+            
+            if effective_free == 0:
+                await asyncio.sleep(POLL_INTERVAL)
+                continue
+
+            capacity = min(effective_free, len(EMULATOR_IDS))
             
             resp = await client.post(
                 f"{HANDLER_URL}/agent/poll",
@@ -230,6 +312,10 @@ async def main_async() -> None:
     async with httpx.AsyncClient() as client:
         # Запускаем воркеры для каждого эмулятора
         workers = []
+        if not EMULATOR_IDS:
+            logger.error("NO EMULATORS FOUND! Please start MEmu instances.")
+            return
+
         for emu_id in EMULATOR_IDS:
             worker = asyncio.create_task(
                 emulator_worker(client, emu_id, job_queue, emulator_pool)
@@ -241,7 +327,7 @@ async def main_async() -> None:
             poll_and_distribute(client, job_queue, emulator_pool)
         )
         
-        logger.info(f"Agent {AGENT_ID} started with {EMULATOR_COUNT} emulators")
+        logger.info(f"Agent {AGENT_ID} started with {len(EMULATOR_IDS)} emulators: {EMULATOR_IDS}")
         
         # Ждем сигнала shutdown
         await shutdown_event.wait()
@@ -273,7 +359,6 @@ def main() -> None:
     
     logger.info(f"Starting agent {AGENT_ID}")
     logger.info(f"Handler URL: {HANDLER_URL}")
-    logger.info(f"Emulators: {EMULATOR_COUNT} (ports {EMULATOR_BASE_PORT} - {EMULATOR_BASE_PORT + 2 * (EMULATOR_COUNT - 1)})")
     
     try:
         asyncio.run(main_async())

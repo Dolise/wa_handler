@@ -267,8 +267,6 @@ class RegistrationExecutor:
             else:
                 print("⚠️ Кнопка 'Verify another way' не найдена")
 
-            # Отправляем статус "ready_for_code"
-            self._send_status("ready_for_code")
             
             print("📞 Ожидание звонка и ввод кода...")
             call_result = self._wait_for_voice_call_code(timeout=120)
@@ -317,6 +315,8 @@ class RegistrationExecutor:
                         time.sleep(1)
                     
                     if not success_reg: raise Exception("Не удалось попасть на главный экран за 90 сек")
+
+                    self._send_status("ready_for_code")
                     
                     print("📩 Жду сообщение с кодом Телеграма (120 сек)...")
                     # Отправляем статус "completed", но код ТГ еще ищем (или можно отправить "waiting_tg_code")

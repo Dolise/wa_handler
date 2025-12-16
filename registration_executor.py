@@ -6,6 +6,8 @@ import tempfile
 import time
 import requests
 import sys
+import threading
+import queue
 
 # ==========================================
 # КОНФИГУРАЦИЯ
@@ -279,15 +281,56 @@ class RegistrationExecutor:
 
             
             print("📞 Ожидание звонка и ввод кода...")
-            call_result = self._wait_for_voice_call_code(timeout=120)
             
-            if call_result and call_result.get('status') == 'success':
-                code = str(call_result.get('code'))
-                print(f"✅ Код получен: {code}")
+            # Очередь для получения результата из потока
+            result_queue = queue.Queue()
+            
+            def wait_call_worker():
+                try:
+                    res = self._wait_for_voice_call_code(timeout=120)
+                    result_queue.put(res)
+                except Exception as e:
+                    result_queue.put({"status": "error", "error": str(e)})
+
+            # Запускаем ожидание звонка в отдельном потоке
+            call_thread = threading.Thread(target=wait_call_worker, daemon=True)
+            call_thread.start()
+
+            code = None
+            wait_start = time.time()
+            wait_max = 130  # Чуть больше таймаута API
+
+            while time.time() - wait_start < wait_max:
+                # 1. Проверяем, не пришел ли результат
+                if not result_queue.empty():
+                    call_result = result_queue.get()
+                    if call_result and call_result.get('status') == 'success':
+                        code = str(call_result.get('code'))
+                        print(f"✅ Код получен: {code}")
+                        break
+                    else:
+                        raise Exception(f"Ошибка получения кода: {call_result.get('error')}")
+                
+                # 2. Сканируем экран на предмет блокировки или подтверждения
+                xml = self.adb.get_ui_dump()
+                if xml:
+                    if "В настоящее время вход невозможен" in xml:
+                        print("🛑 Обнаружена блокировка входа!")
+                        self._send_status("whatsapp_blocked")
+                        raise Exception("WhatsApp blocked: В настоящее время вход невозможен")
+                    
+                    if "Подтверждение номера" in xml:
+                        # Все ок, просто ждем
+                        pass
+                
+                time.sleep(2)
+
+            if code:
                 self.adb.text(code)
                 print("⌨️ Код введен")
             else:
-                raise Exception("Звонок не прошел или код не получен")
+                self._send_status("whatsapp_code_failed")
+                raise Exception("Звонок не прошел или код не получен (таймаут)")
 
             print("⏳ Жду экран ввода имени...")
             if self._wait_for_element(resource_id="com.whatsapp:id/registration_name", timeout=40) or \

@@ -93,6 +93,16 @@ class RegistrationExecutor:
         except Exception as e:
             print(f"⚠️ Failed to send status {status}: {e}")
 
+    def _get_status(self):
+        """Получение статуса через HTTP API"""
+        try:
+            response = requests.get(f"{HANDLER_URL}/api/status/{self.phone}", timeout=10)
+            if response.status_code == 200:
+                return response.json()
+        except Exception as e:
+            print(f"⚠️ Failed to get status: {e}")
+        return {}
+
     # --- Вспомогательные методы ---
     def _setup_proxydroid(self):
         print("🌍 Настраиваю ProxyDroid...")
@@ -321,21 +331,56 @@ class RegistrationExecutor:
                     print("📩 Жду сообщение с кодом Телеграма (120 сек)...")
                     
                     tg_code = None
+                    last_code = None
                     start_wait = time.time()
+                    
+                    # Этап 1: Поиск первого кода
                     while time.time() - start_wait < 120:
                         xml = self.adb.get_ui_dump()
                         if xml:
                             match = re.search(r'(?:code|код|login)[:\s-]*(\d{5})', xml, re.IGNORECASE)
                             if match:
                                 tg_code = match.group(1)
+                                last_code = tg_code
                                 print(f"🚀🚀🚀 НАЙДЕН КОД ТЕЛЕГРАМА: {tg_code}")
-                                # Можно отправить код в API
                                 self._send_status("completed", code=tg_code)
                                 break
                         time.sleep(2)
                     
-                    if not tg_code: print("⚠️ Код Телеграма не найден")
-                    return {"success": True, "phone": self.phone, "emulator": self.emulator_id, "code": tg_code}
+                    if not tg_code: 
+                        print("⚠️ Код Телеграма не найден за 120 сек")
+                    else:
+                        # Этап 2: Ожидание второго кода или стоп-сигнала
+                        print("🔄 Перехожу в режим ожидания второго кода или стоп-сигнала (240 сек)...")
+                        monitor_start = time.time()
+                        monitor_timeout = 240
+                        
+                        while time.time() - monitor_start < monitor_timeout:
+                            # 1. Проверка стоп-сигнала
+                            status_data = self._get_status()
+                            if status_data.get("stop_requested"):
+                                print("🛑 Получен сигнал остановки. Завершаю работу.")
+                                break
+                                
+                            if status_data.get("second_code_requested"):
+                                print("ℹ️ API запрашивает поиск второго кода...")
+                            
+                            # 2. Поиск нового кода
+                            xml = self.adb.get_ui_dump()
+                            if xml:
+                                match = re.search(r'(?:code|код|login)[:\s-]*(\d{5})', xml, re.IGNORECASE)
+                                if match:
+                                    current_code = match.group(1)
+                                    if current_code != last_code:
+                                        print(f"🚀🚀🚀 НАЙДЕН НОВЫЙ КОД ТЕЛЕГРАМА: {current_code}")
+                                        self._send_status("completed", code=current_code)
+                                        last_code = current_code
+                                        # Сбрасываем таймер, чтобы дать время на обработку
+                                        monitor_start = time.time() 
+                            
+                            time.sleep(2)
+                    
+                    return {"success": True, "phone": self.phone, "emulator": self.emulator_id, "code": last_code}
 
                 else:
                     raise Exception("Не удалось нажать Далее")

@@ -320,7 +320,7 @@ class RegistrationExecutor:
                         self._send_status("failed", error="whatsapp blocked")
                         raise Exception("WhatsApp blocked: В настоящее время вход невозможен")
 
-                    if "подтвердить перенос":
+                    if "подтвердить перенос" in xml:
                         print("Уже зарегистрирован")
                         self._send_status("failed", error="already registered")
                         raise Exception("Уже зарегистрирован")

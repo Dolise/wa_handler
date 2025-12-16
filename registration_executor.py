@@ -309,12 +309,13 @@ class RegistrationExecutor:
                         print(f"✅ Код получен: {code}")
                         break
                     else:
+                        self._send_status("whatsapp_code_failed")
                         raise Exception(f"Ошибка получения кода: {call_result.get('error')}")
                 
                 # 2. Сканируем экран на предмет блокировки или подтверждения
                 xml = self.adb.get_ui_dump()
                 if xml:
-                    if "В настоящее время вход невозможен" in xml:
+                    if "время вход" in xml:
                         print("🛑 Обнаружена блокировка входа!")
                         self._send_status("whatsapp_blocked")
                         raise Exception("WhatsApp blocked: В настоящее время вход невозможен")

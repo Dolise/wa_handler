@@ -317,8 +317,13 @@ class RegistrationExecutor:
                 if xml:
                     if "время вход" in xml:
                         print("🛑 Обнаружена блокировка входа!")
-                        self._send_status("whatsapp_blocked")
+                        self._send_status("failed", error="whatsapp blocked")
                         raise Exception("WhatsApp blocked: В настоящее время вход невозможен")
+
+                    if "подтвердить перенос":
+                        print("Уже зарегистрирован")
+                        self._send_status("failed", error="already registered")
+                        raise Exception("Уже зарегистрирован")
                     
                     if "Подтверждение номера" in xml:
                         # Все ок, просто ждем

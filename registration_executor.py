@@ -295,11 +295,11 @@ class RegistrationExecutor:
                self._wait_for_element(text="Введите ваше имя", timeout=1):
                 
                 print("✓ Экран ввода имени найден")
-                time.sleep(1)
+                time.sleep(3)
                 self._click_element(resource_id="com.whatsapp:id/registration_name", timeout=2)
                 self.adb.text("Alex")
                 self.adb.keyevent(66) # Enter
-                time.sleep(1)
+                time.sleep(3)
                 
                 print("⏳ Жму 'Далее'...")
                 if self._click_element(text="Next", timeout=5) or \
@@ -353,17 +353,17 @@ class RegistrationExecutor:
                         # Этап 2: Ожидание второго кода или стоп-сигнала
                         print("🔄 Перехожу в режим ожидания второго кода или стоп-сигнала (240 сек)...")
                         monitor_start = time.time()
-                        monitor_timeout = 240
+                        monitor_timeout = 100
                         
                         while time.time() - monitor_start < monitor_timeout:
                             # 1. Проверка стоп-сигнала
-                            status_data = self._get_status()
-                            if status_data.get("stop_requested"):
-                                print("🛑 Получен сигнал остановки. Завершаю работу.")
-                                break
+                            # status_data = self._get_status()
+                            # if status_data.get("stop_requested"):
+                            #     print("🛑 Получен сигнал остановки. Завершаю работу.")
+                            #     break
                                 
-                            if status_data.get("second_code_requested"):
-                                print("ℹ️ API запрашивает поиск второго кода...")
+                            # if status_data.get("second_code_requested"):
+                            #     print("ℹ️ API запрашивает поиск второго кода...")
                             
                             # 2. Поиск нового кода
                             xml = self.adb.get_ui_dump()

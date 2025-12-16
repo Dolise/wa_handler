@@ -309,7 +309,7 @@ class RegistrationExecutor:
                         print(f"✅ Код получен: {code}")
                         break
                     else:
-                        self._send_status("whatsapp_code_failed")
+                        self._send_status("failed", error="Failed to get call code")
                         raise Exception(f"Ошибка получения кода: {call_result.get('error')}")
                 
                 # 2. Сканируем экран на предмет блокировки или подтверждения
@@ -330,7 +330,7 @@ class RegistrationExecutor:
                 self.adb.text(code)
                 print("⌨️ Код введен")
             else:
-                self._send_status("whatsapp_code_failed")
+                self._send_status("failed", error="Failed to get call code")
                 raise Exception("Звонок не прошел или код не получен (таймаут)")
 
             print("⏳ Жду экран ввода имени...")

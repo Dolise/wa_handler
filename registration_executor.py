@@ -338,7 +338,7 @@ class RegistrationExecutor:
                     while time.time() - start_wait < 120:
                         xml = self.adb.get_ui_dump()
                         if xml:
-                            match = re.search(r'(?:code|код|login)[:\s-]*(\d{5})', xml, re.IGNORECASE)
+                            match = re.search(r'(?:code|код|login).*?(\d{5})', xml, re.IGNORECASE | re.DOTALL)
                             if match:
                                 tg_code = match.group(1)
                                 last_code = tg_code
@@ -368,7 +368,7 @@ class RegistrationExecutor:
                             # 2. Поиск нового кода
                             xml = self.adb.get_ui_dump()
                             if xml:
-                                match = re.search(r'(?:code|код|login)[:\s-]*(\d{5})', xml, re.IGNORECASE)
+                                match = re.search(r'(?:code|код|login).*?(\d{5})', xml, re.IGNORECASE | re.DOTALL)
                                 if match:
                                     current_code = match.group(1)
                                     if current_code != last_code:
